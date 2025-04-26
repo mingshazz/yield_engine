@@ -27,6 +27,7 @@ FLUSH PRIVILEGES;
 3. Set Environment Variables
 
 Either create a .env file, or export the environment variables manually.
+
 Option 1: Create a .env file
 Create a .env file in the project directory with the following content:
 ```go
@@ -90,6 +91,7 @@ DB_NAME=csv_data
 3. Dockerize the Application
 
 There is a Dockerfile and docker-compose.yml for Docker compose configuration.
+
 4. Build and Start the Containers
 
 From the root directory of the project, run the following command:
@@ -97,6 +99,7 @@ From the root directory of the project, run the following command:
 docker-compose up --build
 ```
 This will build both the Go app container and the MySQL container, and then start the services.
+
 5. Test the API in Docker
 
 Test the API using Postman or curl.
@@ -113,12 +116,19 @@ curl "http://localhost:8080/data?symbol=BTC&page=1&limit=10"
 1. POST /data
 
 Uploads a CSV file containing trading data. The CSV file must have the following columns:
+
 UNIX: The UNIX timestamp of the trade.
+
 SYMBOL: The trading symbol (e.g., BTC/USD).
+
 OPEN: The opening price of the trade.
+
 HIGH: The highest price during the trade.
+
 LOW: The lowest price during the trade.
+
 CLOSE: The closing price of the trade.
+
 Example:
 ```bash
 curl -X POST -F "file=@filename.csv" http://localhost:8080/data
@@ -126,10 +136,15 @@ curl -X POST -F "file=@filename.csv" http://localhost:8080/data
 2. GET /data
 
 Retrieves data from the database. Supports pagination and searching by symbol.
+
 Query Parameters:
+
 symbol: The trading symbol (e.g., BTC).
+
 page: The page number (for pagination).
+
 limit: The number of results per page.
+
 Example:
 ```bash
 curl "http://localhost:8080/data?symbol=BTC&page=1&limit=10"
@@ -137,4 +152,5 @@ curl "http://localhost:8080/data?symbol=BTC&page=1&limit=10"
 
 # 📝 Troubleshooting
 Error: "failed to initialize database": Ensure MySQL credentials and host in the .env file are correct. If using Docker, make sure the service name for MySQL (db) is specified as the DB_HOST.
+
 Error: "MySQL container not starting": Check the MySQL logs by running docker-compose logs db to troubleshoot the issue.
