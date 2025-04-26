@@ -1,32 +1,27 @@
 version: '3.9'
 
 services:
-  api:
+  app:
     build: .
     ports:
       - "8080:8080"
-    env_file: .env
+    env_file:
+      - .env
     depends_on:
       - db
-    deploy:
-    resources:
-      limits:
-        memory: 4G
+    volumes:
+      - .:/app
 
   db:
     image: mysql:8.0
     restart: always
     environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: csv_data
-      MYSQL_USER: go_user
-      MYSQL_PASSWORD: go_pass
-    ports:
-      - "3306:3306"
+      MYSQL_ROOT_PASSWORD: ${DB_PASS}
+      MYSQL_DATABASE: ${DB_NAME}
     volumes:
       - mysql_data:/var/lib/mysql
+    ports:
+      - "3306:3306"
 
 volumes:
   mysql_data:
-
-

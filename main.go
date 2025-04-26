@@ -1,188 +1,206 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/csv"
 	"fmt"
-	"io"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"gorm.io/driver/mysql"
-	"gorm.io/gorm"
+	_ "github.com/go-sql-driver/mysql"
+	"github.com/joho/godotenv"
 )
 
-// Data model
-type Data struct {
-	ID     uint    `gorm:"primaryKey" json:"id"`
-	UNIX   int64   `json:"unix"`
-	SYMBOL string  `json:"symbol"`
-	OPEN   float64 `json:"open"`
-	HIGH   float64 `json:"high"`
-	LOW    float64 `json:"low"`
-	CLOSE  float64 `json:"close"`
+var db *sql.DB
+
+type Record struct {
+	Unix   int64   `json:"unix"`
+	Symbol string  `json:"symbol"`
+	Open   float64 `json:"open"`
+	High   float64 `json:"high"`
+	Low    float64 `json:"low"`
+	Close  float64 `json:"close"`
 }
 
-var db *gorm.DB
-
 func initDB() {
-	dsn := fmt.Sprintf("%s:%s@tcp(%s)/%s?parseTime=true",
-		os.Getenv("DB_USER"),
-		os.Getenv("DB_PASS"),
-		os.Getenv("DB_HOST"),
-		os.Getenv("DB_NAME"),
-	)
+	user := os.Getenv("DB_USER")
+	pass := os.Getenv("DB_PASS")
+	host := os.Getenv("DB_HOST")
+	dbname := os.Getenv("DB_NAME")
+
+	dsn := fmt.Sprintf("%s:%s@tcp(%s)/%s?parseTime=true", user, pass, host, dbname)
+
 	var err error
-	db, err = gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	db, err = sql.Open("mysql", dsn)
 	if err != nil {
-		panic("Failed to connect to database: " + err.Error())
+		log.Fatalf("failed to connect to DB: %v", err)
 	}
-	db.AutoMigrate(&Data{})
+
+	err = db.Ping()
+	if err != nil {
+		log.Fatalf("failed to initialize database: %v", err)
+	}
+
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS records (
+			id INT AUTO_INCREMENT PRIMARY KEY,
+			unix BIGINT,
+			symbol VARCHAR(20),
+			open DOUBLE,
+			high DOUBLE,
+			low DOUBLE,
+			close DOUBLE
+		);
+	`)
+	if err != nil {
+		log.Fatalf("failed to create table: %v", err)
+	}
 }
 
 func main() {
+	err := godotenv.Load()
+	if err != nil {
+		log.Println("Warning: .env file not found. Make sure environment variables are set.")
+	}
+
 	initDB()
 
-	r := gin.Default()
-	r.MaxMultipartMemory = 8 << 30 // 8 GiB file limit
+	router := gin.Default()
 
-	r.POST("/data", uploadData)
-	r.GET("/data", getData)
+	router.POST("/data", uploadCSV)
+	router.GET("/data", getData)
 
-	r.NoRoute(func(c *gin.Context) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Endpoint not found"})
-	})
-
-	r.Run(":8080")
+	log.Println("Server running on :8080")
+	router.Run(":8080")
 }
 
-// POST /data
-func uploadData(c *gin.Context) {
-	fileHeader, err := c.FormFile("file")
+func uploadCSV(c *gin.Context) {
+	file, err := c.FormFile("file")
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "File upload error"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file is required"})
 		return
 	}
 
-	file, err := fileHeader.Open()
+	src, err := file.Open()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not open uploaded file"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to open file"})
 		return
 	}
-	defer file.Close()
+	defer src.Close()
 
-	reader := csv.NewReader(file)
+	reader := csv.NewReader(src)
+	reader.FieldsPerRecord = -1
+	reader.ReuseRecord = true
 
-	// Validate header
 	header, err := reader.Read()
-	if err != nil || !validateHeader(header) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid or missing CSV header"})
+	if err != nil || len(header) < 6 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid CSV header"})
 		return
 	}
 
-	const batchSize = 1000
-	var batch []Data
-	totalInserted := 0
+	expected := []string{"UNIX", "SYMBOL", "OPEN", "HIGH", "LOW", "CLOSE"}
+	for i, col := range expected {
+		if strings.TrimSpace(header[i]) != col {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "CSV header must match: UNIX,SYMBOL,OPEN,HIGH,LOW,CLOSE"})
+			return
+		}
+	}
 
+	stmt, err := db.Prepare("INSERT INTO records (unix, symbol, open, high, low, close) VALUES (?, ?, ?, ?, ?, ?)")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to prepare insert"})
+		return
+	}
+	defer stmt.Close()
+
+	inserted := 0
 	for {
-		record, err := reader.Read()
-		if err == io.EOF {
+		row, err := reader.Read()
+		if err != nil {
 			break
 		}
-		if err != nil {
+
+		if len(row) < 6 {
+			log.Println("Skipping short row:", row)
 			continue
 		}
 
-		data, err := parseRecord(record)
-		if err == nil {
-			batch = append(batch, data)
+		unix, err1 := strconv.ParseInt(row[0], 10, 64)
+		open, err2 := strconv.ParseFloat(row[2], 64)
+		high, err3 := strconv.ParseFloat(row[3], 64)
+		low, err4 := strconv.ParseFloat(row[4], 64)
+		close, err5 := strconv.ParseFloat(row[5], 64)
+
+		if err1 != nil || err2 != nil || err3 != nil || err4 != nil || err5 != nil {
+			log.Println("Skipping malformed row:", row)
+			continue
 		}
 
-		if len(batch) >= batchSize {
-			if err := db.Create(&batch).Error; err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert batch into DB"})
-				return
-			}
-			totalInserted += len(batch)
-			batch = batch[:0]
+		_, err = stmt.Exec(unix, row[1], open, high, low, close)
+		if err != nil {
+			log.Printf("Insert error: %v\n", err)
+			continue
 		}
+
+		inserted++
 	}
-
-	if len(batch) > 0 {
-		if err := db.Create(&batch).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert final batch into DB"})
-			return
-		}
-		totalInserted += len(batch)
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "Data uploaded successfully", "inserted_records": totalInserted})
-}
-
-// GET /data
-func getData(c *gin.Context) {
-	var results []Data
-	query := db.Model(&Data{})
-
-	symbol := c.Query("symbol")
-	if symbol != "" {
-		query = query.Where("symbol LIKE ?", "%"+symbol+"%")
-	}
-
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
-	offset := (page - 1) * limit
-
-	var total int64
-	query.Count(&total)
-
-	query.Limit(limit).Offset(offset).Find(&results)
 
 	c.JSON(http.StatusOK, gin.H{
-		"total":   total,
-		"page":    page,
-		"limit":   limit,
-		"results": results,
+		"message": fmt.Sprintf("Uploaded %d records", inserted),
 	})
 }
 
-// Header validator
-func validateHeader(header []string) bool {
-	expected := []string{"UNIX", "SYMBOL", "OPEN", "HIGH", "LOW", "CLOSE"}
-	if len(header) != len(expected) {
-		return false
+func getData(c *gin.Context) {
+	symbol := c.Query("symbol")
+	pageStr := c.DefaultQuery("page", "1")
+	limitStr := c.DefaultQuery("limit", "10")
+
+	page, err1 := strconv.Atoi(pageStr)
+	limit, err2 := strconv.Atoi(limitStr)
+
+	if err1 != nil || err2 != nil || page < 1 || limit < 1 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid pagination parameters"})
+		return
 	}
-	for i := range header {
-		if strings.TrimSpace(strings.ToUpper(header[i])) != expected[i] {
-			return false
+
+	offset := (page - 1) * limit
+
+	query := "SELECT unix, symbol, open, high, low, close FROM records"
+	args := []interface{}{}
+
+	if symbol != "" {
+		query += " WHERE symbol = ?"
+		args = append(args, symbol)
+	}
+
+	query += " ORDER BY unix LIMIT ? OFFSET ?"
+	args = append(args, limit, offset)
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query database"})
+		return
+	}
+	defer rows.Close()
+
+	var records []Record
+	for rows.Next() {
+		var r Record
+		err := rows.Scan(&r.Unix, &r.Symbol, &r.Open, &r.High, &r.Low, &r.Close)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read data"})
+			return
 		}
-	}
-	return true
-}
-
-// Convert CSV row into struct
-func parseRecord(record []string) (Data, error) {
-	if len(record) != 6 {
-		return Data{}, fmt.Errorf("invalid record length")
-	}
-	unix, err1 := strconv.ParseInt(record[0], 10, 64)
-	open, err2 := strconv.ParseFloat(record[2], 64)
-	high, err3 := strconv.ParseFloat(record[3], 64)
-	low, err4 := strconv.ParseFloat(record[4], 64)
-	closeVal, err5 := strconv.ParseFloat(record[5], 64)
-
-	if err1 != nil || err2 != nil || err3 != nil || err4 != nil || err5 != nil {
-		return Data{}, fmt.Errorf("parsing error")
+		records = append(records, r)
 	}
 
-	return Data{
-		UNIX:   unix,
-		SYMBOL: record[1],
-		OPEN:   open,
-		HIGH:   high,
-		LOW:    low,
-		CLOSE:  closeVal,
-	}, nil
+	c.JSON(http.StatusOK, gin.H{
+		"page":    page,
+		"limit":   limit,
+		"results": records,
+	})
 }

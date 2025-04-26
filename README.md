@@ -20,9 +20,7 @@ mysql -u root
 Create the necessary database and user:
 ```sql
 CREATE DATABASE csv_data;
-CREATE USER 'go_user'@'localhost' IDENTIFIED BY 'go_pass';
-GRANT ALL PRIVILEGES ON csv_data.* TO 'go_user'@'localhost';
-FLUSH PRIVILEGES;
+ALTER USER 'root'@'localhost' IDENTIFIED BY 'yourpassword;
 ```
 3. Set Environment Variables
 
@@ -31,18 +29,18 @@ Either create a .env file, or export the environment variables manually.
 Option 1: Create a .env file
 Create a .env file in the project directory with the following content:
 ```go
-DB_USER=go_user
-DB_PASS=go_pass
+DB_USER=root
+DB_PASS=yourpassword
 DB_HOST=localhost
-DB_NAME=csv_data
+DB_NAME=csvdb
 ```
 Option 2: Export Environment Variables
 Instead of using a .env file, set the environment variables manually:
 ```bash
-export DB_USER=go_user
-export DB_PASS=go_pass
+export DB_USER=root
+export DB_PASS=yourpassword
 export DB_HOST=localhost
-export DB_NAME=csv_data
+export DB_NAME=csvdb
 ```
 4. Install Go Dependencies
 
@@ -83,10 +81,10 @@ Ensure there are the following files in the project directory:
 
 There is a .env file in the project directory with the following content:
 ```go
-DB_USER=go_user
-DB_PASS=go_pass
+DB_USER=root
+DB_PASS=yourpassword
 DB_HOST=db    # Use the service name for MySQL in Docker Compose
-DB_NAME=csv_data
+DB_NAME=csvdb
 ```
 3. Dockerize the Application
 
